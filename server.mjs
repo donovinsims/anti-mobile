@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import { networkInterfaces } from 'os';
 import crypto from 'crypto';
 import { mkdir, readFile, writeFile, rename, appendFile } from 'fs/promises';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -16,11 +16,21 @@ const STATE_FILE = join(DATA_DIR, 'state.json');
 const POLICY_FILE = join(__dirname, 'policy.json');
 let POLICY = { allow: [], deny: [] };
 
-const PORT = 8787;
-const app = express();
-const server = createServer(app);
+// --- Config ---
+const args = process.argv.slice(2);
+const getArg = (name) => {
+    const idx = args.indexOf(name);
+    return idx !== -1 ? args[idx + 1] : null;
+};
+const hasArg = (name) => args.includes(name);
+
+const PORT = parseInt(getArg('--port') || process.env.PORT || '8787');
+const HOST = getArg('--host') || '0.0.0.0';
+
+export const app = express();
+export const server = createServer(app);
 // Don't bind 'server' here so we can handle upgrade manually for auth
-const wss = new WebSocketServer({ noServer: true });
+export const wss = new WebSocketServer({ noServer: true });
 
 // --- Poke Logic ---
 let pokeInFlight = false;
@@ -141,15 +151,35 @@ function generateToken() {
 
 function getLocalIPs() {
     const nets = networkInterfaces();
-    const results = [];
+    const results = new Set();
     for (const name of Object.keys(nets)) {
         for (const net of nets[name]) {
+            // Skip internal (non-127.0.0.1) and non-IPv4
             if (net.family === 'IPv4' && !net.internal) {
-                results.push(net.address);
+                // Filter out Tailscale IPs (100.x.x.x) from the "Local" list
+                if (!net.address.startsWith('100.')) {
+                    results.add(net.address);
+                }
             }
         }
     }
-    return results;
+    return Array.from(results);
+}
+
+function getTailscaleInfo() {
+    try {
+        const stdout = execSync('tailscale status --json', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+        const status = JSON.parse(stdout);
+        if (status.BackendState === 'Running') {
+            const dnsName = status.Self.DNSName;
+            const name = dnsName ? dnsName.replace(/\.$/, '') : null;
+            const ips = status.TailscaleIPs || [];
+            return { name, ips };
+        }
+    } catch (e) {
+        return null;
+    }
+    return null;
 }
 
 function broadcast(event, payload) {
@@ -297,7 +327,7 @@ const checkAuth = requireAuth; // Alias for consistency with new endpoints
 
 // Public
 app.get('/health', (req, res) => {
-    res.json({ ok: true, ts: new Date().toISOString() });
+    res.json({ ok: true, name: "ag_bridge", version: "0.5.0", ts: new Date().toISOString() });
 });
 
 app.post('/pair/claim', (req, res) => {
@@ -600,18 +630,41 @@ wss.on('connection', (ws) => {
 
 // --- Start ---
 // Load state then start
-Promise.all([loadState(), loadPolicy()]).then(() => {
-    server.listen(PORT, '0.0.0.0', () => {
-        const ips = getLocalIPs();
-        console.log('='.repeat(50));
-        console.log(` AG Bridge v1 running on port ${PORT}`);
-        console.log('='.repeat(50));
-        console.log(` PAIRING CODE: [ ${PAIRING_CODE} ]`);
-        console.log('-'.repeat(50));
-        console.log(' Open on your phone:');
-        ips.forEach(ip => {
-            console.log(` http://${ip}:${PORT}`);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    Promise.all([loadState(), loadPolicy()]).then(() => {
+        server.listen(PORT, HOST, () => {
+            const ips = getLocalIPs();
+            const ts = getTailscaleInfo();
+
+            console.log('='.repeat(50));
+            console.log(` AG Bridge v${STATE?.version || '1'} running on port ${PORT}`);
+            console.log('='.repeat(50));
+            console.log(` PAIRING CODE: [ ${PAIRING_CODE} ]`);
+            console.log('-'.repeat(50));
+
+            console.log(' Local (same Wi-Fi):');
+            if (ips.length > 0) {
+                ips.forEach(ip => {
+                    console.log(` http://${ip}:${PORT}`);
+                });
+            } else {
+                console.log(' (No local LAN IP found)');
+            }
+
+            if (ts) {
+                console.log('\n Remote (Tailscale Active):');
+                if (ts.name) {
+                    console.log(` http://${ts.name}:${PORT}`);
+                }
+                ts.ips.forEach(ip => {
+                    console.log(` http://${ip}:${PORT}`);
+                });
+            } else {
+                console.log('\n Remote (Tailscale Inactive):');
+                console.log(' Install Tailscale for access anywhere: https://tailscale.com');
+            }
+
+            console.log('='.repeat(50));
         });
-        console.log('='.repeat(50));
     });
-});
+}
