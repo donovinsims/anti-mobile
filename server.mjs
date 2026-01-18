@@ -15,7 +15,7 @@ const LOG_FILE = join(LOGS_DIR, `ag-bridge-${new Date().toISOString().split('T')
 const STATE_FILE = join(DATA_DIR, 'state.json');
 const APPROVALS_FILE = join(DATA_DIR, 'approvals.json');
 const POLICY_FILE = join(__dirname, 'policy.json');
-let POLICY = { allow: [], deny: [] };
+let POLICY = { version: 2, profiles: { relaxed: { allow: [".*"] }, balanced: { allow: [] } }, globalDeny: [] };
 
 // --- Config ---
 const args = process.argv.slice(2);
@@ -310,28 +310,40 @@ async function loadState() {
 function checkPolicy(cmd) {
     if (!cmd) return { allowed: false, error: 'missing_command' };
 
-    // Deny list (Always wins)
-    for (const pattern of POLICY.deny || []) {
+    // 1. Global Deny (Always wins)
+    for (const pattern of POLICY.globalDeny || []) {
         if (new RegExp(pattern).test(cmd)) {
-            return { allowed: false, error: 'command_denied' };
+            return { allowed: false, error: 'global_denied' };
         }
     }
 
-    // Allow list (Only if strictMode)
-    if (STATE.strictMode) {
-        let matched = false;
-        for (const pattern of POLICY.allow || []) {
-            if (new RegExp(pattern).test(cmd)) {
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) {
-            return { allowed: false, error: 'command_not_allowlisted' };
+    // 2. Determine Profile (Map v0.5 boolean to v0.6 profiles)
+    // strictMode=true -> 'balanced', strictMode=false -> 'relaxed'
+    // Future: STATE.securityProfile could hold 'paranoid' etc.
+    const profileName = STATE.strictMode ? 'balanced' : 'relaxed';
+    const profile = POLICY.profiles?.[profileName];
+
+    if (!profile) {
+        // Fallback safety: if profile invalid, BLOCK ALL unless relaxed was intended?
+        // Better to be safe.
+        return { allowed: false, error: 'invalid_policy_profile' };
+    }
+
+    // 3. Profile Deny
+    for (const pattern of profile.deny || []) {
+        if (new RegExp(pattern).test(cmd)) {
+            return { allowed: false, error: 'profile_denied' };
         }
     }
 
-    return { allowed: true };
+    // 4. Profile Allow
+    for (const pattern of profile.allow || []) {
+        if (new RegExp(pattern).test(cmd)) {
+            return { allowed: true };
+        }
+    }
+
+    return { allowed: false, error: 'command_not_allowlisted' };
 }
 
 // --- Middleware ---
