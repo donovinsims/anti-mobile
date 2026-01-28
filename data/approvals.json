@@ -1,0 +1,34 @@
+[
+  {
+    "id": "appr_cbc1a37c",
+    "createdAt": "2026-01-27T22:46:43.418Z",
+    "kind": "command",
+    "details": {
+      "cmd": "pnpm test",
+      "cwd": ".",
+      "risk": "yellow"
+    },
+    "status": "denied",
+    "decidedAt": "2026-01-27T22:46:50.647Z",
+    "meta": {
+      "risk": "yellow",
+      "clientTag": "dashboard_manual"
+    }
+  },
+  {
+    "id": "appr_16e7e841",
+    "createdAt": "2026-01-27T22:46:48.236Z",
+    "kind": "command",
+    "details": {
+      "cmd": "pnpm test",
+      "cwd": ".",
+      "risk": "yellow"
+    },
+    "status": "denied",
+    "decidedAt": "2026-01-27T22:46:51.301Z",
+    "meta": {
+      "risk": "yellow",
+      "clientTag": "dashboard_manual"
+    }
+  }
+]
